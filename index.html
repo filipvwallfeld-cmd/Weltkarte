@@ -1,505 +1,873 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import * as d3 from "d3";
-
-const DEFAULT_PLACES = [
-  { id: 1,  name: "Athen",         lat: 37.9838,  lng: 23.7275  },
-  { id: 2,  name: "Berlin",        lat: 52.5200,  lng: 13.4050  },
-  { id: 3,  name: "Lissabon",      lat: 38.7223,  lng: -9.1393  },
-  { id: 4,  name: "Kapstadt",      lat: -33.9249, lng: 18.4241  },
-  { id: 5,  name: "Sydney",        lat: -33.8688, lng: 151.2093 },
-  { id: 6,  name: "Paris",         lat: 48.8566,  lng: 2.3522   },
-  { id: 7,  name: "Köln",          lat: 50.9333,  lng: 6.9500   },
-  { id: 8,  name: "München",       lat: 48.1351,  lng: 11.5820  },
-  { id: 9,  name: "Los Angeles",   lat: 34.0522,  lng: -118.2437},
-  { id: 10, name: "San Francisco", lat: 37.7749,  lng: -122.4194},
-  { id: 11, name: "Las Vegas",     lat: 36.1699,  lng: -115.1398},
-  { id: 12, name: "Ibiza",         lat: 38.9067,  lng: 1.4206   },
-  { id: 13, name: "Mallorca",      lat: 39.6953,  lng: 3.0176   },
-  { id: 14, name: "Kreta",         lat: 35.2401,  lng: 24.8093  },
-  { id: 15, name: "New York",      lat: 40.7128,  lng: -74.0060 },
-];
-
-const W = 960, H = 500;
-
-export default function TravelMap() {
-  const svgRef = useRef(null);
-  const [places, setPlaces] = useState([]);
-  const [geoData, setGeoData] = useState(null);
-  const [transform, setTransform] = useState({ k: 1, x: 0, y: 0 });
-  const [tooltip, setTooltip] = useState(null);
-  const [modal, setModal] = useState(false);
-  const [inputVal, setInputVal] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [hint, setHint] = useState("");
-  const [manualMode, setManualMode] = useState(null);
-  const [status, setStatus] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null);
-  const statusTimer = useRef(null);
-  const zoomRef = useRef(null);
-
-  useEffect(() => {
-    fetch("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json")
-      .then(r => r.json())
-      .then(topo => {
-        const countries = topoToGeo(topo, topo.objects.countries);
-        setGeoData(countries);
-      })
-      .catch(() => {
-        setGeoData({ type: "FeatureCollection", features: [] });
-      });
-  }, []);
-
-  useEffect(() => {
-    window.storage?.get("travel-places-v2")
-      .then(res => {
-        if (res?.value) setPlaces(JSON.parse(res.value));
-        else setPlaces(DEFAULT_PLACES);
-      })
-      .catch(() => setPlaces(DEFAULT_PLACES));
-  }, []);
-
-  useEffect(() => {
-    if (places.length > 0) {
-      window.storage?.set("travel-places-v2", JSON.stringify(places)).catch(() => {});
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My World – Reisekarte</title>
+  <style>
+    :root{
+      --bg:#0b1120;
+      --panel:#131c2e;
+      --panel-2:#0f1728;
+      --border:#1e2d45;
+      --gold:#c9a84c;
+      --gold-2:#e8c97a;
+      --text:#e8ddd0;
+      --muted:#7a8694;
+      --danger:#e05252;
+      --info:#3a7bd5;
     }
-  }, [places]);
 
-  useEffect(() => {
-    if (!svgRef.current) return;
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "DM Sans", "Segoe UI", Arial, sans-serif;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .app {
+      width: 100%;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 20px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      box-shadow: 0 2px 20px rgba(0,0,0,.4);
+      flex-shrink: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: rgba(201,168,76,.15);
+      border: 1px solid var(--gold);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      flex-shrink: 0;
+    }
+
+    .brand-title {
+      font-family: Georgia, serif;
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      white-space: nowrap;
+    }
+
+    .gold { color: var(--gold); }
+
+    .count {
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .count strong {
+      color: var(--gold);
+      font-size: 22px;
+      font-family: Georgia, serif;
+      margin-right: 4px;
+    }
+
+    .btn {
+      border: none;
+      border-radius: 8px;
+      padding: 9px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .18s ease, transform .12s ease, border-color .18s ease;
+    }
+
+    .btn:active { transform: translateY(1px); }
+    .btn-primary {
+      background: var(--gold);
+      color: var(--bg);
+    }
+    .btn-primary:hover { background: var(--gold-2); }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .btn-secondary:hover {
+      border-color: #304866;
+      color: #9aa7b6;
+    }
+
+    .btn-outline-gold {
+      background: transparent;
+      border: 1px solid var(--gold);
+      color: var(--gold);
+    }
+
+    .btn-danger {
+      background: var(--danger);
+      color: white;
+    }
+
+    .map-wrap {
+      position: relative;
+      flex: 1;
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 40%, #0f2444 0%, #060d1a 100%);
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: grab;
+    }
+
+    svg.manual {
+      cursor: crosshair;
+    }
+
+    .hint-bottom {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      font-size: 11px;
+      color: #3a5070;
+      pointer-events: none;
+    }
+
+    .manual-banner {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(201,168,76,.15);
+      border: 1px solid var(--gold);
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 13px;
+      color: var(--gold);
+      white-space: nowrap;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .zoom-controls {
+      position: absolute;
+      right: 16px;
+      bottom: 36px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      z-index: 10;
+    }
+
+    .zoom-btn {
+      width: 34px;
+      height: 34px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--gold);
+      font-size: 18px;
+      cursor: pointer;
+    }
+
+    .zoom-btn.reset {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 20px;
+      transform: translateX(-50%);
+      background: var(--panel);
+      border: 1px solid var(--gold);
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 13px;
+      color: var(--text);
+      box-shadow: 0 4px 20px rgba(0,0,0,.4);
+      white-space: nowrap;
+      z-index: 3000;
+      animation: fadeUp .18s ease;
+    }
+
+    .toast.info { border-color: var(--info); }
+    .toast.error { border-color: var(--danger); }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.7);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+      padding: 20px;
+    }
+
+    .overlay.show { display: flex; }
+
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px;
+      width: min(360px, 100%);
+      box-shadow: 0 20px 60px rgba(0,0,0,.6);
+      animation: fadeUp .18s ease;
+    }
+
+    .modal.delete {
+      width: min(300px, 100%);
+      border-color: var(--danger);
+      text-align: center;
+      padding: 24px;
+    }
+
+    .modal-title {
+      font-family: Georgia, serif;
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+
+    .modal-subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .label {
+      display: block;
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      font-family: inherit;
+    }
+
+    .input:focus { border-color: var(--gold); }
+
+    .hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 8px;
+      line-height: 1.5;
+      min-height: 16px;
+    }
+
+    .hint.warning { color: #e8a020; }
+    .hint.error { color: #f08b8b; }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+
+    .actions .btn {
+      flex: 1;
+      min-width: 110px;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 760px) {
+      .header {
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .count {
+        order: 3;
+        width: 100%;
+        text-align: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="brand">
+        <div class="brand-icon">🧭</div>
+        <div class="brand-title">My <span class="gold">World</span></div>
+      </div>
+
+      <div class="count"><strong id="placeCount">0</strong>Orte besucht</div>
+
+      <button id="openAddModalBtn" class="btn btn-primary">
+        <span style="font-size:18px;line-height:1;">＋</span> Ort hinzufügen
+      </button>
+    </div>
+
+    <div class="map-wrap">
+      <svg id="mapSvg" viewBox="0 0 960 500" preserveAspectRatio="xMidYMid meet" aria-label="Weltkarte"></svg>
+
+      <div class="hint-bottom">Scroll zum Zoomen · Ziehen zum Navigieren</div>
+      <div id="manualBanner" class="manual-banner" style="display:none;"></div>
+
+      <div class="zoom-controls">
+        <button id="zoomInBtn" class="zoom-btn">＋</button>
+        <button id="zoomOutBtn" class="zoom-btn">−</button>
+        <button id="resetZoomBtn" class="zoom-btn reset">↺</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" style="display:none;"></div>
+
+  <div id="addModalOverlay" class="overlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addModalTitle">
+      <div id="addModalTitle" class="modal-title">✈️ Neues Reiseziel</div>
+      <div class="modal-subtitle">Gib einen Ort ein — der Pin wird automatisch gesetzt.</div>
+
+      <label class="label" for="placeInput">Ort / Stadt / Region</label>
+      <input id="placeInput" class="input" type="text" placeholder="z.B. Tokyo, Bali, Toskana…" />
+
+      <div id="placeHint" class="hint"></div>
+
+      <div class="actions">
+        <button id="cancelAddBtn" class="btn btn-secondary">Abbrechen</button>
+        <button id="manualSetBtn" class="btn btn-outline-gold" style="display:none;">Manuell setzen</button>
+        <button id="confirmAddBtn" class="btn btn-primary">Pin setzen</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="deleteModalOverlay" class="overlay">
+    <div class="modal delete" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+      <div style="font-size:28px; margin-bottom:12px;">🗑</div>
+      <div id="deleteModalTitle" class="modal-title" style="font-size:16px; margin-bottom:8px;">Ort entfernen?</div>
+      <div id="deleteText" class="modal-subtitle" style="margin-bottom:20px;"></div>
+
+      <div class="actions" style="margin-top:0;">
+        <button id="cancelDeleteBtn" class="btn btn-secondary">Abbrechen</button>
+        <button id="confirmDeleteBtn" class="btn btn-danger">Löschen</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+  <script>
+    const DEFAULT_PLACES = [
+      { id: 1,  name: "Athen",         lat: 37.9838,  lng: 23.7275   },
+      { id: 2,  name: "Berlin",        lat: 52.5200,  lng: 13.4050   },
+      { id: 3,  name: "Lissabon",      lat: 38.7223,  lng: -9.1393   },
+      { id: 4,  name: "Kapstadt",      lat: -33.9249, lng: 18.4241   },
+      { id: 5,  name: "Sydney",        lat: -33.8688, lng: 151.2093  },
+      { id: 6,  name: "Paris",         lat: 48.8566,  lng: 2.3522    },
+      { id: 7,  name: "Köln",          lat: 50.9333,  lng: 6.9500    },
+      { id: 8,  name: "München",       lat: 48.1351,  lng: 11.5820   },
+      { id: 9,  name: "Los Angeles",   lat: 34.0522,  lng: -118.2437 },
+      { id: 10, name: "San Francisco", lat: 37.7749,  lng: -122.4194 },
+      { id: 11, name: "Las Vegas",     lat: 36.1699,  lng: -115.1398 },
+      { id: 12, name: "Ibiza",         lat: 38.9067,  lng: 1.4206    },
+      { id: 13, name: "Mallorca",      lat: 39.6953,  lng: 3.0176    },
+      { id: 14, name: "Kreta",         lat: 35.2401,  lng: 24.8093   },
+      { id: 15, name: "New York",      lat: 40.7128,  lng: -74.0060  }
+    ];
+
+    const STORAGE_KEY = "travel-places-v2";
+    const W = 960;
+    const H = 500;
+
+    let places = loadPlaces();
+    let geoData = null;
+    let currentTransform = d3.zoomIdentity;
+    let manualMode = null;
+    let loading = false;
+    let deleteId = null;
+    let toastTimer = null;
+
+    const placeCountEl = document.getElementById("placeCount");
+    const svg = d3.select("#mapSvg");
+    const svgNode = svg.node();
+
+    const addModalOverlay = document.getElementById("addModalOverlay");
+    const deleteModalOverlay = document.getElementById("deleteModalOverlay");
+    const placeInput = document.getElementById("placeInput");
+    const placeHint = document.getElementById("placeHint");
+    const manualSetBtn = document.getElementById("manualSetBtn");
+    const confirmAddBtn = document.getElementById("confirmAddBtn");
+    const deleteText = document.getElementById("deleteText");
+    const manualBanner = document.getElementById("manualBanner");
+    const toast = document.getElementById("toast");
+
+    const projection = d3.geoNaturalEarth1()
+      .scale(153)
+      .translate([W / 2, H / 2]);
+
+    const pathGen = d3.geoPath(projection);
+
+    svg.html(`
+      <defs>
+        <radialGradient id="oceanGrad" cx="50%" cy="40%" r="70%">
+          <stop offset="0%" stop-color="#0f2444"></stop>
+          <stop offset="100%" stop-color="#060d1a"></stop>
+        </radialGradient>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="2" result="blur"></feGaussianBlur>
+          <feMerge>
+            <feMergeNode in="blur"></feMergeNode>
+            <feMergeNode in="SourceGraphic"></feMergeNode>
+          </feMerge>
+        </filter>
+      </defs>
+    `);
+
+    svg.append("rect")
+      .attr("width", W)
+      .attr("height", H)
+      .attr("fill", "url(#oceanGrad)");
+
+    const viewport = svg.append("g").attr("class", "viewport");
+    const baseLayer = viewport.append("g").attr("class", "base-layer");
+    const markerLayer = viewport.append("g").attr("class", "marker-layer");
+    const tooltipLayer = viewport.append("g").attr("class", "tooltip-layer");
+
+    const graticule = d3.geoGraticule();
+
     const zoom = d3.zoom()
       .scaleExtent([1, 80])
       .translateExtent([[-W * 2, -H * 2], [W * 3, H * 3]])
-      .on("zoom", (e) => setTransform({ k: e.transform.k, x: e.transform.x, y: e.transform.y }));
-    zoomRef.current = zoom;
-    d3.select(svgRef.current).call(zoom);
-  }, []);
+      .on("zoom", (event) => {
+        currentTransform = event.transform;
+        viewport.attr("transform", currentTransform.toString());
+        renderMarkers();
+      });
 
-  const projection = d3.geoNaturalEarth1()
-    .scale(153)
-    .translate([W / 2, H / 2]);
+    svg.call(zoom);
 
-  const pathGen = d3.geoPath().projection(projection);
-
-  const project = useCallback((lat, lng) => {
-    const pt = projection([lng, lat]);
-    if (!pt) return null;
-    return {
-      x: pt[0] * transform.k + transform.x,
-      y: pt[1] * transform.k + transform.y,
-    };
-  }, [projection, transform]);
-
-  function showStatus(msg, type = "success") {
-    setStatus({ msg, type });
-    clearTimeout(statusTimer.current);
-    statusTimer.current = setTimeout(() => setStatus(null), 2800);
-  }
-
-  async function handleAdd() {
-    if (!inputVal.trim()) return;
-    setLoading(true);
-    setHint("⏳ Ort wird gesucht…");
-    try {
-      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(inputVal.trim())}&format=json&limit=1`;
-      const res = await fetch(url, { headers: { "Accept-Language": "de" } });
-      const data = await res.json();
-      if (data?.length > 0) {
-        const place = {
-          id: Date.now(),
-          name: inputVal.trim(),
-          lat: parseFloat(data[0].lat),
-          lng: parseFloat(data[0].lon),
-        };
-        setPlaces(prev => [...prev, place]);
-        setModal(false);
-        setInputVal("");
-        setHint("");
-        showStatus(`✅ ${place.name} hinzugefügt`);
-        if (zoomRef.current && svgRef.current) {
-          const pt = projection([place.lng, place.lat]);
-          if (pt) {
-            const t = d3.zoomIdentity.translate(W/2 - pt[0]*4, H/2 - pt[1]*4).scale(4);
-            d3.select(svgRef.current).transition().duration(900).call(zoomRef.current.transform, t);
-          }
-        }
-      } else {
-        setHint("⚠️ Nicht gefunden — klicke unten auf «Manuell setzen».");
-        setLoading(false);
+    svg.on("click", function(event) {
+      if (!manualMode) {
+        clearTooltip();
         return;
       }
-    } catch {
-      setHint("❌ Fehler. Bitte versuche 'Manuell setzen'.");
-      setLoading(false);
-      return;
-    }
-    setLoading(false);
-  }
 
-  function handleManual() {
-    const name = inputVal.trim();
-    if (!name) return;
-    setModal(false);
-    setInputVal("");
-    setHint("");
-    setManualMode(name);
-    showStatus("📍 Klicke auf die Karte um den Pin zu setzen", "info");
-  }
+      const [mx, my] = d3.pointer(event, svgNode);
+      const ix = currentTransform.invertX(mx);
+      const iy = currentTransform.invertY(my);
+      const coords = projection.invert([ix, iy]);
+      if (!coords) return;
 
-  function handleMapClick(e) {
-    if (!manualMode) return;
-    const svg = svgRef.current.getBoundingClientRect();
-    const mx = e.clientX - svg.left;
-    const my = e.clientY - svg.top;
-    const ix = (mx - transform.x) / transform.k;
-    const iy = (my - transform.y) / transform.k;
-    const coords = projection.invert([ix, iy]);
-    if (!coords) return;
-    const place = { id: Date.now(), name: manualMode, lat: coords[1], lng: coords[0] };
-    setPlaces(prev => [...prev, place]);
-    setManualMode(null);
-    showStatus(`✅ ${manualMode} manuell gesetzt`);
-  }
+      const place = {
+        id: Date.now(),
+        name: manualMode,
+        lat: coords[1],
+        lng: coords[0]
+      };
 
-  function handleDeleteConfirmed() {
-    setPlaces(prev => prev.filter(p => p.id !== confirmDelete));
-    setTooltip(null);
-    setConfirmDelete(null);
-    showStatus("🗑 Ort entfernt", "error");
-  }
-
-  const tfStr = `translate(${transform.x},${transform.y}) scale(${transform.k})`;
-
-  return (
-    <div style={{
-      width: "100%", height: "100vh", background: "#0b1120",
-      display: "flex", flexDirection: "column", fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
-      overflow: "hidden", userSelect: "none",
-    }}>
-      {/* HEADER */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        padding: "12px 20px", background: "#131c2e",
-        borderBottom: "1px solid #1e2d45", flexShrink: 0,
-        boxShadow: "0 2px 20px rgba(0,0,0,0.4)",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: "50%",
-            background: "rgba(201,168,76,0.15)", border: "1px solid #c9a84c",
-            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16,
-          }}>🧭</div>
-          <span style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 700, color: "#e8ddd0", letterSpacing: "0.02em" }}>
-            My <span style={{ color: "#c9a84c" }}>World</span>
-          </span>
-        </div>
-        <div style={{ fontSize: 13, color: "#7a8694" }}>
-          <span style={{ color: "#c9a84c", fontSize: 22, fontFamily: "Georgia, serif", fontWeight: 700, marginRight: 4 }}>{places.length}</span>
-          Orte besucht
-        </div>
-        <button onClick={() => { setModal(true); setHint(""); }}
-          style={{
-            display: "flex", alignItems: "center", gap: 8,
-            background: "#c9a84c", color: "#0b1120", border: "none",
-            borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600,
-            cursor: "pointer", transition: "all 0.2s",
-          }}
-          onMouseEnter={e => e.target.style.background = "#e8c97a"}
-          onMouseLeave={e => e.target.style.background = "#c9a84c"}
-        >
-          <span style={{ fontSize: 18, lineHeight: 1 }}>＋</span> Ort hinzufügen
-        </button>
-      </div>
-
-      {/* MAP */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        <svg
-          ref={svgRef}
-          width="100%" height="100%"
-          viewBox={`0 0 ${W} ${H}`}
-          preserveAspectRatio="xMidYMid meet"
-          style={{ display: "block", cursor: manualMode ? "crosshair" : "grab" }}
-          onClick={handleMapClick}
-        >
-          <defs>
-            <radialGradient id="oceanGrad" cx="50%" cy="40%" r="70%">
-              <stop offset="0%" stopColor="#0f2444"/>
-              <stop offset="100%" stopColor="#060d1a"/>
-            </radialGradient>
-            <filter id="glow">
-              <feGaussianBlur stdDeviation="2" result="blur"/>
-              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
-
-          <rect width={W} height={H} fill="url(#oceanGrad)"/>
-
-          <g transform={tfStr}>
-            <path d={pathGen({ type: "Sphere" }) || ""} fill="none" stroke="#1e3050" strokeWidth={0.5/transform.k}/>
-            <path d={pathGen(d3.geoGraticule()()) || ""} fill="none" stroke="rgba(30,60,100,0.4)" strokeWidth={0.4/transform.k}/>
-
-            {geoData?.features?.map((f, i) => (
-              <path key={i} d={pathGen(f) || ""} fill="#1a2e4a" stroke="#0d1e35" strokeWidth={0.5/transform.k}/>
-            ))}
-
-            {/* Markers - sqrt-damped scaling */}
-            {places.map(place => {
-              const pt = projection([place.lng, place.lat]);
-              if (!pt) return null;
-              const s = Math.sqrt(transform.k) / transform.k;
-              const r = 3 * s;
-              const isHovered = tooltip?.id === place.id;
-              return (
-                <g key={place.id} transform={`translate(${pt[0]},${pt[1]})`} style={{ cursor: "pointer" }}
-                  onClick={e => {
-                    e.stopPropagation();
-                    setTooltip(tooltip?.id === place.id ? null : { id: place.id, name: place.name, x: pt[0], y: pt[1] });
-                  }}
-                >
-                  <circle r={r * 3} fill="transparent" />
-                  <circle r={r * 2.2} fill="none" stroke="rgba(201,168,76,0.3)" strokeWidth={0.5 * s} />
-                  <circle r={isHovered ? r * 1.5 : r}
-                    fill={isHovered ? "#e8c97a" : "#c9a84c"}
-                    stroke="#0b1120" strokeWidth={0.8 * s}
-                    filter="url(#glow)"
-                    style={{ transition: "r 0.15s" }}
-                  />
-                </g>
-              );
-            })}
-
-            {/* Tooltip - sqrt-damped scaling */}
-            {tooltip && (() => {
-              const s = Math.sqrt(transform.k) / transform.k;
-              const bw = 130 * s, bh = 58 * s, pad = 10 * s, fs = 11 * s;
-              const x = tooltip.x + 6 * s;
-              const y = tooltip.y - bh - 5 * s;
-              return (
-                <g onClick={e => e.stopPropagation()}>
-                  <rect x={x} y={y} width={bw} height={bh}
-                    rx={4 * s} ry={4 * s}
-                    fill="#131c2e" stroke="#c9a84c" strokeWidth={0.8 * s}
-                    style={{ filter: "drop-shadow(0 4px 10px rgba(0,0,0,0.5))" }}
-                  />
-                  <text x={x + pad} y={y + 18 * s}
-                    fill="#e8ddd0" fontSize={fs * 1.15} fontWeight="700" fontFamily="Georgia, serif">
-                    {tooltip.name}
-                  </text>
-                  <text x={x + pad} y={y + 28 * s}
-                    fill="#7a8694" fontSize={fs * 0.8} fontFamily="sans-serif">
-                    {`${places.find(p=>p.id===tooltip.id)?.lat.toFixed(2)}°, ${places.find(p=>p.id===tooltip.id)?.lng.toFixed(2)}°`}
-                  </text>
-                  <text x={x + pad} y={y + 41 * s}
-                    fill="#c9a84c" fontSize={fs * 0.9} fontFamily="sans-serif"
-                    style={{ cursor: "pointer" }}
-                    onClick={() => setConfirmDelete(tooltip.id)}
-                  >
-                    🗑 Entfernen
-                  </text>
-                  <text x={x + bw - 5 * s} y={y + 13 * s}
-                    fill="#7a8694" fontSize={fs * 1.2} textAnchor="end"
-                    style={{ cursor: "pointer" }}
-                    onClick={() => setTooltip(null)}
-                  >×</text>
-                </g>
-              );
-            })()}
-          </g>
-        </svg>
-
-        {/* Zoom hint */}
-        <div style={{ position: "absolute", bottom: 12, left: 12, fontSize: 11, color: "#3a5070" }}>
-          Scroll zum Zoomen · Ziehen zum Navigieren
-        </div>
-
-        {manualMode && (
-          <div style={{
-            position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)",
-            background: "rgba(201,168,76,0.15)", border: "1px solid #c9a84c",
-            borderRadius: 8, padding: "10px 18px", fontSize: 13, color: "#c9a84c",
-            pointerEvents: "none", whiteSpace: "nowrap",
-          }}>
-            📍 Klicke auf die Karte um «{manualMode}» zu platzieren
-          </div>
-        )}
-
-        {/* Zoom controls */}
-        <div style={{ position: "absolute", bottom: 36, right: 16, display: "flex", flexDirection: "column", gap: 4 }}>
-          {[["＋", 2], ["−", 0.5]].map(([label, factor]) => (
-            <button key={label} onClick={() => {
-              d3.select(svgRef.current).transition().duration(300).call(zoomRef.current.scaleBy, factor);
-            }} style={{
-              width: 34, height: 34, background: "#131c2e",
-              border: "1px solid #1e2d45", borderRadius: 7,
-              color: "#c9a84c", fontSize: 18, cursor: "pointer", lineHeight: 1,
-            }}>{label}</button>
-          ))}
-          <button onClick={() => {
-            d3.select(svgRef.current).transition().duration(400).call(zoomRef.current.transform, d3.zoomIdentity);
-          }} style={{
-            width: 34, height: 34, background: "#131c2e",
-            border: "1px solid #1e2d45", borderRadius: 7,
-            color: "#7a8694", fontSize: 11, cursor: "pointer", lineHeight: 1,
-          }}>↺</button>
-        </div>
-      </div>
-
-      {/* STATUS BAR */}
-      {status && (
-        <div style={{
-          position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
-          background: "#131c2e",
-          border: `1px solid ${status.type === "error" ? "#e05252" : status.type === "info" ? "#3a7bd5" : "#c9a84c"}`,
-          borderRadius: 8, padding: "10px 18px", fontSize: 13, color: "#e8ddd0",
-          boxShadow: "0 4px 20px rgba(0,0,0,0.4)", whiteSpace: "nowrap", zIndex: 3000,
-        }}>
-          {status.msg}
-        </div>
-      )}
-
-      {/* ADD MODAL */}
-      {modal && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
-          backdropFilter: "blur(4px)", zIndex: 2000,
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }} onClick={() => { setModal(false); setInputVal(""); setHint(""); }}>
-          <div style={{
-            background: "#131c2e", border: "1px solid #1e2d45",
-            borderRadius: 14, padding: "28px", width: 360,
-            boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
-          }} onClick={e => e.stopPropagation()}>
-            <div style={{ fontFamily: "Georgia, serif", fontSize: 20, fontWeight: 700, color: "#e8ddd0", marginBottom: 6 }}>
-              ✈️ Neues Reiseziel
-            </div>
-            <div style={{ fontSize: 12, color: "#7a8694", marginBottom: 20, lineHeight: 1.5 }}>
-              Gib einen Ort ein — der Pin wird automatisch gesetzt.
-            </div>
-            <label style={{ display: "block", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7a8694", marginBottom: 6 }}>
-              Ort / Stadt / Region
-            </label>
-            <input
-              autoFocus
-              value={inputVal}
-              onChange={e => setInputVal(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleAdd()}
-              placeholder="z.B. Tokyo, Bali, Toskana…"
-              style={{
-                width: "100%", background: "#0b1120", border: "1px solid #1e2d45",
-                borderRadius: 8, padding: "10px 14px", color: "#e8ddd0",
-                fontSize: 14, outline: "none", boxSizing: "border-box", fontFamily: "inherit",
-              }}
-              onFocus={e => e.target.style.borderColor = "#c9a84c"}
-              onBlur={e => e.target.style.borderColor = "#1e2d45"}
-            />
-            {hint && (
-              <div style={{ fontSize: 11, color: hint.startsWith("⚠") ? "#e8a020" : "#7a8694", marginTop: 8, lineHeight: 1.5 }}>
-                {hint}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-              <button onClick={() => { setModal(false); setInputVal(""); setHint(""); }}
-                style={{ flex: 1, padding: 10, background: "transparent", border: "1px solid #1e2d45", borderRadius: 8, color: "#7a8694", fontSize: 13, cursor: "pointer" }}>
-                Abbrechen
-              </button>
-              {hint.startsWith("⚠") && (
-                <button onClick={handleManual}
-                  style={{ flex: 1, padding: 10, background: "transparent", border: "1px solid #c9a84c", borderRadius: 8, color: "#c9a84c", fontSize: 13, cursor: "pointer" }}>
-                  Manuell setzen
-                </button>
-              )}
-              <button onClick={handleAdd} disabled={loading || !inputVal.trim()}
-                style={{
-                  flex: 2, padding: 10, background: loading ? "#7a6030" : "#c9a84c",
-                  border: "none", borderRadius: 8, color: "#0b1120",
-                  fontSize: 13, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer",
-                }}>
-                {loading ? "Suche…" : "Pin setzen"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* DELETE CONFIRM */}
-      {confirmDelete && (
-        <div style={{
-          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
-          backdropFilter: "blur(4px)", zIndex: 2000,
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <div style={{
-            background: "#131c2e", border: "1px solid #e05252",
-            borderRadius: 14, padding: "24px", width: 300,
-            boxShadow: "0 20px 60px rgba(0,0,0,0.6)", textAlign: "center",
-          }}>
-            <div style={{ fontSize: 28, marginBottom: 12 }}>🗑</div>
-            <div style={{ fontFamily: "Georgia, serif", fontSize: 16, color: "#e8ddd0", marginBottom: 8 }}>
-              Ort entfernen?
-            </div>
-            <div style={{ fontSize: 12, color: "#7a8694", marginBottom: 20 }}>
-              «{places.find(p => p.id === confirmDelete)?.name}» wird gelöscht.
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => setConfirmDelete(null)}
-                style={{ flex: 1, padding: 10, background: "transparent", border: "1px solid #1e2d45", borderRadius: 8, color: "#7a8694", fontSize: 13, cursor: "pointer" }}>
-                Abbrechen
-              </button>
-              <button onClick={handleDeleteConfirmed}
-                style={{ flex: 1, padding: 10, background: "#e05252", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                Löschen
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        @keyframes fadeUp {
-          from { opacity: 0; transform: translateY(10px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-      `}</style>
-    </div>
-  );
-}
-
-// ── Minimal TopoJSON → GeoJSON converter ─────────────────────────────────────
-function topoToGeo(topology, object) {
-  const arcs = topology.arcs;
-  const scale = topology.transform?.scale || [1, 1];
-  const translate = topology.transform?.translate || [0, 0];
-
-  function decodeArc(arc) {
-    let x = 0, y = 0;
-    return arc.map(pt => {
-      x += pt[0]; y += pt[1];
-      return [x * scale[0] + translate[0], y * scale[1] + translate[1]];
+      places.push(place);
+      persistPlaces();
+      updateCount();
+      renderMarkers();
+      showStatus(`✅ ${manualMode} manuell gesetzt`, "success");
+      setManualMode(null);
     });
-  }
 
-  function getArc(i) {
-    const reversed = i < 0;
-    const arc = decodeArc(arcs[reversed ? ~i : i]);
-    return reversed ? arc.reverse() : arc;
-  }
-
-  function ringToCoords(ring) {
-    return ring.flatMap(i => getArc(i));
-  }
-
-  function geomToFeature(geom) {
-    if (!geom) return null;
-    if (geom.type === "Polygon") {
-      return { type: "Feature", geometry: { type: "Polygon", coordinates: geom.arcs.map(ringToCoords) }, properties: geom.properties || {} };
+    function loadPlaces() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return structuredClone(DEFAULT_PLACES);
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : structuredClone(DEFAULT_PLACES);
+      } catch {
+        return structuredClone(DEFAULT_PLACES);
+      }
     }
-    if (geom.type === "MultiPolygon") {
-      return { type: "Feature", geometry: { type: "MultiPolygon", coordinates: geom.arcs.map(poly => poly.map(ringToCoords)) }, properties: geom.properties || {} };
-    }
-    return null;
-  }
 
-  return {
-    type: "FeatureCollection",
-    features: object.geometries.map(geomToFeature).filter(Boolean),
-  };
-}
+    function persistPlaces() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(places));
+    }
+
+    function updateCount() {
+      placeCountEl.textContent = String(places.length);
+    }
+
+    function showStatus(message, type = "success") {
+      toast.textContent = message;
+      toast.className = "toast" + (type ? ` ${type}` : "");
+      toast.style.display = "block";
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.style.display = "none";
+      }, 2800);
+    }
+
+    function setHint(text = "", kind = "") {
+      placeHint.textContent = text;
+      placeHint.className = "hint";
+      if (kind) placeHint.classList.add(kind);
+      manualSetBtn.style.display = text.startsWith("⚠️") ? "" : "none";
+    }
+
+    function openAddModal() {
+      addModalOverlay.classList.add("show");
+      placeInput.value = "";
+      setHint("");
+      setLoading(false);
+      setTimeout(() => placeInput.focus(), 0);
+    }
+
+    function closeAddModal() {
+      addModalOverlay.classList.remove("show");
+      placeInput.value = "";
+      setHint("");
+      setLoading(false);
+    }
+
+    function openDeleteModal(id) {
+      deleteId = id;
+      const place = places.find(p => p.id === id);
+      deleteText.textContent = place ? `«${place.name}» wird gelöscht.` : "Dieser Ort wird gelöscht.";
+      deleteModalOverlay.classList.add("show");
+    }
+
+    function closeDeleteModal() {
+      deleteId = null;
+      deleteModalOverlay.classList.remove("show");
+    }
+
+    function setLoading(state) {
+      loading = state;
+      confirmAddBtn.disabled = state;
+      confirmAddBtn.textContent = state ? "Suche…" : "Pin setzen";
+      confirmAddBtn.style.opacity = state ? ".8" : "1";
+      confirmAddBtn.style.cursor = state ? "not-allowed" : "pointer";
+    }
+
+    function setManualMode(name) {
+      manualMode = name;
+      if (manualMode) {
+        manualBanner.textContent = `📍 Klicke auf die Karte um «${manualMode}» zu platzieren`;
+        manualBanner.style.display = "block";
+        svg.classed("manual", true);
+      } else {
+        manualBanner.style.display = "none";
+        svg.classed("manual", false);
+      }
+    }
+
+    function clearTooltip() {
+      tooltipLayer.selectAll("*").remove();
+    }
+
+    function zoomToPlace(place) {
+      const pt = projection([place.lng, place.lat]);
+      if (!pt) return;
+      const t = d3.zoomIdentity
+        .translate(W / 2 - pt[0] * 4, H / 2 - pt[1] * 4)
+        .scale(4);
+
+      svg.transition()
+        .duration(900)
+        .call(zoom.transform, t);
+    }
+
+    async function handleAdd() {
+      const value = placeInput.value.trim();
+      if (!value || loading) return;
+
+      setLoading(true);
+      setHint("⏳ Ort wird gesucht…");
+
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(value)}&format=json&limit=1`;
+        const res = await fetch(url, {
+          headers: {
+            "Accept-Language": "de"
+          }
+        });
+
+        if (!res.ok) throw new Error("Geocoding fehlgeschlagen");
+
+        const data = await res.json();
+
+        if (Array.isArray(data) && data.length > 0) {
+          const place = {
+            id: Date.now(),
+            name: value,
+            lat: parseFloat(data[0].lat),
+            lng: parseFloat(data[0].lon)
+          };
+
+          places.push(place);
+          persistPlaces();
+          updateCount();
+          renderMarkers();
+          closeAddModal();
+          showStatus(`✅ ${place.name} hinzugefügt`, "success");
+          zoomToPlace(place);
+        } else {
+          setHint("⚠️ Nicht gefunden — klicke unten auf „Manuell setzen“.", "warning");
+        }
+      } catch (err) {
+        console.error(err);
+        setHint("❌ Fehler. Bitte versuche „Manuell setzen“.", "error");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function handleManual() {
+      const value = placeInput.value.trim();
+      if (!value) return;
+      closeAddModal();
+      setManualMode(value);
+      showStatus("📍 Klicke auf die Karte um den Pin zu setzen", "info");
+    }
+
+    function handleDeleteConfirmed() {
+      if (deleteId == null) return;
+      places = places.filter(p => p.id !== deleteId);
+      persistPlaces();
+      updateCount();
+      renderMarkers();
+      closeDeleteModal();
+      clearTooltip();
+      showStatus("🗑 Ort entfernt", "error");
+    }
+
+    function renderBaseMap() {
+      baseLayer.selectAll("*").remove();
+
+      baseLayer.append("path")
+        .attr("d", pathGen({ type: "Sphere" }) || "")
+        .attr("fill", "none")
+        .attr("stroke", "#1e3050")
+        .attr("stroke-width", 0.5);
+
+      baseLayer.append("path")
+        .attr("d", pathGen(graticule()) || "")
+        .attr("fill", "none")
+        .attr("stroke", "rgba(30,60,100,0.4)")
+        .attr("stroke-width", 0.4);
+
+      if (!geoData?.features) return;
+
+      baseLayer.selectAll("path.country")
+        .data(geoData.features)
+        .join("path")
+        .attr("class", "country")
+        .attr("d", d => pathGen(d) || "")
+        .attr("fill", "#1a2e4a")
+        .attr("stroke", "#0d1e35")
+        .attr("stroke-width", 0.5);
+    }
+
+    function renderTooltip(place, pt) {
+      clearTooltip();
+
+      const s = Math.sqrt(currentTransform.k) / currentTransform.k;
+      const bw = 130 * s;
+      const bh = 58 * s;
+      const pad = 10 * s;
+      const fs = 11 * s;
+      const x = pt[0] + 6 * s;
+      const y = pt[1] - bh - 5 * s;
+
+      const g = tooltipLayer.append("g")
+        .style("pointer-events", "all");
+
+      g.append("rect")
+        .attr("x", x)
+        .attr("y", y)
+        .attr("width", bw)
+        .attr("height", bh)
+        .attr("rx", 4 * s)
+        .attr("ry", 4 * s)
+        .attr("fill", "#131c2e")
+        .attr("stroke", "#c9a84c")
+        .attr("stroke-width", 0.8 * s)
+        .style("filter", "drop-shadow(0 4px 10px rgba(0,0,0,0.5))");
+
+      g.append("text")
+        .attr("x", x + pad)
+        .attr("y", y + 18 * s)
+        .attr("fill", "#e8ddd0")
+        .attr("font-size", fs * 1.15)
+        .attr("font-weight", 700)
+        .attr("font-family", "Georgia, serif")
+        .text(place.name);
+
+      g.append("text")
+        .attr("x", x + pad)
+        .attr("y", y + 28 * s)
+        .attr("fill", "#7a8694")
+        .attr("font-size", fs * 0.8)
+        .attr("font-family", "sans-serif")
+        .text(`${place.lat.toFixed(2)}°, ${place.lng.toFixed(2)}°`);
+
+      g.append("text")
+        .attr("x", x + pad)
+        .attr("y", y + 41 * s)
+        .attr("fill", "#c9a84c")
+        .attr("font-size", fs * 0.9)
+        .attr("font-family", "sans-serif")
+        .style("cursor", "pointer")
+        .text("🗑 Entfernen")
+        .on("click", (event) => {
+          event.stopPropagation();
+          openDeleteModal(place.id);
+        });
+
+      g.append("text")
+        .attr("x", x + bw - 5 * s)
+        .attr("y", y + 13 * s)
+        .attr("fill", "#7a8694")
+        .attr("font-size", fs * 1.2)
+        .attr("text-anchor", "end")
+        .style("cursor", "pointer")
+        .text("×")
+        .on("click", (event) => {
+          event.stopPropagation();
+          clearTooltip();
+        });
+    }
+
+    function renderMarkers() {
+      markerLayer.selectAll("*").remove();
+      clearTooltip();
+
+      const s = Math.sqrt(currentTransform.k) / currentTransform.k;
+
+      const groups = markerLayer.selectAll("g.marker")
+        .data(places, d => d.id)
+        .join("g")
+        .attr("class", "marker")
+        .attr("transform", d => {
+          const pt = projection([d.lng, d.lat]);
+          return pt ? `translate(${pt[0]},${pt[1]})` : null;
+        })
+        .style("cursor", "pointer")
+        .on("click", function(event, d) {
+          event.stopPropagation();
+          const pt = projection([d.lng, d.lat]);
+          if (!pt) return;
+          renderTooltip(d, pt);
+        });
+
+      groups.append("circle")
+        .attr("r", 3 * s * 3)
+        .attr("fill", "transparent");
+
+      groups.append("circle")
+        .attr("r", 3 * s * 2.2)
+        .attr("fill", "none")
+        .attr("stroke", "rgba(201,168,76,0.3)")
+        .attr("stroke-width", 0.5 * s);
+
+      groups.append("circle")
+        .attr("r", 3 * s)
+        .attr("fill", "#c9a84c")
+        .attr("stroke", "#0b1120")
+        .attr("stroke-width", 0.8 * s)
+        .attr("filter", "url(#glow)");
+    }
+
+    async function init() {
+      updateCount();
+
+      try {
+        const topo = await fetch("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json").then(r => r.json());
+        geoData = topojson.feature(topo, topo.objects.countries);
+      } catch (err) {
+        console.error("Konnte Kartendaten nicht laden:", err);
+        geoData = { type: "FeatureCollection", features: [] };
+        showStatus("⚠️ Kartendaten konnten nicht geladen werden", "error");
+      }
+
+      renderBaseMap();
+      renderMarkers();
+    }
+
+    document.getElementById("openAddModalBtn").addEventListener("click", openAddModal);
+    document.getElementById("cancelAddBtn").addEventListener("click", closeAddModal);
+    document.getElementById("confirmAddBtn").addEventListener("click", handleAdd);
+    document.getElementById("manualSetBtn").addEventListener("click", handleManual);
+    document.getElementById("cancelDeleteBtn").addEventListener("click", closeDeleteModal);
+    document.getElementById("confirmDeleteBtn").addEventListener("click", handleDeleteConfirmed);
+
+    document.getElementById("zoomInBtn").addEventListener("click", () => {
+      svg.transition().duration(300).call(zoom.scaleBy, 2);
+    });
+
+    document.getElementById("zoomOutBtn").addEventListener("click", () => {
+      svg.transition().duration(300).call(zoom.scaleBy, 0.5);
+    });
+
+    document.getElementById("resetZoomBtn").addEventListener("click", () => {
+      svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity);
+    });
+
+    placeInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") handleAdd();
+      if (event.key === "Escape") closeAddModal();
+    });
+
+    addModalOverlay.addEventListener("click", (event) => {
+      if (event.target === addModalOverlay) closeAddModal();
+    });
+
+    deleteModalOverlay.addEventListener("click", (event) => {
+      if (event.target === deleteModalOverlay) closeDeleteModal();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeAddModal();
+        closeDeleteModal();
+        setManualMode(null);
+        clearTooltip();
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>
